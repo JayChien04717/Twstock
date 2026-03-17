@@ -1,0 +1,10 @@
+Stock_base_data/
+revenue/
+__pycache__/
+*.bak
+*.txt
+reorg.py
+cleanup_sys.py
+cleanup_sys2.py
+reorg_log.txt
+tests_dir/
