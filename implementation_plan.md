@@ -1,61 +1,100 @@
-# 全市場掃描 + 本地快取 — 實施計畫
+# File Reorganization Plan
 
-## 問題
+## Problem
 
-- FinMind 無 stock_id 的批量 API 需要 Sponsor 等級
-- 使用者帳號為 Register 等級 (600 req/hr)
-- 約 1,800 檔上市櫃股票（排除 ETF/權證/興櫃）需要多次 API 呼叫
+The project currently has **3 overlapping data directories**:
 
-## 設計方案
+| Directory | Contents | Role |
+|---|---|---|
+| `stock_data/{stock_id}/` | [data.csv](file:///d:/Jay%20PhD/Code/stock/revenue/1268/data.csv), [financial.csv](file:///d:/Jay%20PhD/Code/stock/revenue/1268/financial.csv), `price.csv`, etc. | Main cache (used by [stock_cache.py](file:///d:/Jay%20PhD/Code/stock/analysis/stock_cache.py)) |
+| `revenue/{stock_id}/` | [data.csv](file:///d:/Jay%20PhD/Code/stock/revenue/1268/data.csv), [financial.csv](file:///d:/Jay%20PhD/Code/stock/revenue/1268/financial.csv) | **Duplicate** — same files, same stock IDs |
+| `analysis/Stock_base_data/` | `cache_meta.json`, `stock_info.csv` | Old metadata dir (orphaned) |
+
+The source code (`analysis/stock_cache.py`) has `CACHE_DIR = stock_data/` and also has a dead `REVENUE_BASE_DIR` constant and unused `_save_to_revenue_folder()` method which caused the duplicate `revenue/` directory to be created.
+
+**Goal:** Consolidate everything into a single, clean structure:
+```
+stock/
+├── main.py
+├── migrate_data.py
+├── .gitignore
+├── analysis/          ← all Python source files
+│   ├── stock_cache.py
+│   ├── ai_analyst.py
+│   ├── ...other .py files
+│   └── templates/
+└── data/              ← unified data directory (renamed from stock_data)
+    ├── cache_meta.json
+    ├── stock_info.csv
+    └── {stock_id}/
+        ├── price.csv
+        ├── institutional.csv
+        ├── margin.csv
+        ├── per_pbr.csv
+        ├── revenue.csv
+        └── financial.csv
+```
+
+## User Review Required
 
 > [!IMPORTANT]
-> **API 限速策略**：Register 等級每小時 600 次請求。每檔股票需 ~4 次 API 呼叫（價格 + 法人 + 融資 + PER）。
-> - 首次完整抓取 ~1,800 股 × 4 = ~7,200 次 → 分 **12 批次**，每批 ~150 股
-> - 後續每日更新只抓「最後快取日 → 今天」的差量資料
+> **`revenue/` and `stock_data/` have identical per-stock files for tested stock 1268.** Before deleting `revenue/`, we need to check: do **any** stocks exist in `revenue/` that are **missing** from `stock_data/`? The plan includes a pre-check script to verify this before any deletion.
 
-### 快取架構
+> [!WARNING]
+> `analysis/Stock_base_data/` only has `cache_meta.json` and `stock_info.csv`. We will move these two files into the consolidated `data/` directory. The `Stock_base_data` folder in `analysis/` can then be deleted.
 
-```
-Stock_base_data/
-├── stock_info.csv             # 股票總覽 (每日更新)
-├── daily_price.csv            # 所有股票日K (增量追加)
-├── institutional.csv          # 三大法人 (增量追加)
-├── margin.csv                 # 融資融券 (增量追加)
-├── per_pbr.csv                # PER/PBR (增量追加)
-├── revenue.csv                # 月營收 (增量追加)
-└── cache_meta.json            # 快取狀態 (最後更新日、進度)
-```
-
-### 核心邏輯
-
-1. **首次執行** → 依批次逐步抓取所有股票，每批 150 檔，中間自動暫停避免限速
-2. **後續執行** → 讀 `cache_meta.json` 的 `last_date`，只抓新資料並 append
-3. 分析時直接讀本地 CSV，不再呼叫 API
+> [!NOTE]
+> The rename from `stock_data/` → `data/` is optional. If you prefer to keep the name `stock_data/`, just let me know and I'll skip that rename.
 
 ## Proposed Changes
 
-### [NEW] [stock_cache.py](file:///d:/Jay%20PhD/Code/stock/stock_cache.py)
-- `StockCache` 類別：初始化 / 增量更新 / 讀取本地資料
-- 批次抓取 + 自動限速 + 進度條
-- 支援斷點續傳（記錄已完成的批次）
+### Step 1: Pre-check script (verify no data loss before restructure)
 
-### [MODIFY] [data_fetcher.py](file:///d:/Jay%20PhD/Code/stock/data_fetcher.py)
-- 新增 `get_daily_price_all(date)` — 逐股抓取所有股票指定日期價格
-- 新增 `get_institutional_all_by_stock(stock_ids, start, end)` — 批次抓法人資料
+Run a quick PowerShell/Python command to compare which stocks are in `revenue/` vs `stock_data/` and check for any that exist in one but not the other.
 
-### [MODIFY] [ai_analyst.py](file:///d:/Jay%20PhD/Code/stock/ai_analyst.py)
-- 新增 `run_full_market_scan()` — 全市場掃描模式，從 Cache 讀取
-- 族群輪動改用 Cache 裡的全市場法人資料
+### Step 2: Code cleanup in `analysis/stock_cache.py`
 
-### [MODIFY] [main.py](file:///d:/Jay%20PhD/Code/stock/main.py)
-- 新增 `--init-cache` 首次建立快取
-- 新增 `--update-cache` 增量更新快取
-- 新增 `--full-scan` 全市場分析
+#### [MODIFY] [stock_cache.py](file:///d:/Jay%20PhD/Code/stock/analysis/stock_cache.py)
 
-## Verification
+- Rename `CACHE_DIR` path from `stock_data` → `data`
+- Remove dead constant `REVENUE_BASE_DIR`
+- Remove unused method `_save_to_revenue_folder()`
+- Remove duplicate `_save_meta` call and `self.batch_delay` assignment (line 38 duplicate)
+- Remove orphaned `download_deep_fundamental` hardcoded path (`data.csv`) — fix it to consistently use `revenue.csv`
 
-```bash
-python main.py --init-cache       # 首次建快取 (約需多批次)
-python main.py --update-cache     # 每日增量更新
-python main.py --full-scan        # 全市場分析 + 族群輪動
+### Step 3: Move metadata files
+
+Move `analysis/Stock_base_data/cache_meta.json` and `analysis/Stock_base_data/stock_info.csv` into `data/` (the main cache dir), then delete `analysis/Stock_base_data/`.
+
+> [!NOTE]
+> `data/stock_info.csv` may already exist in `stock_data/` — if so, keep the version in `stock_data/`, don't overwrite.
+
+### Step 4: Merge `revenue/` data into `stock_data/` (or `data/`)
+
+For each stock in `revenue/{stock_id}/`:
+- If the same file exists in `stock_data/{stock_id}/`, verify they are identical (skip if so)
+- If missing from `stock_data/`, copy it over
+
+Then delete the `revenue/` directory.
+
+### Step 5 (Optional): Rename `stock_data/` → `data/`
+
+A simple folder rename. The `CACHE_DIR` in `stock_cache.py` would be updated to match.
+
+## Verification Plan
+
+### Automated check
+```powershell
+# Check if any stocks exist in revenue/ but NOT in stock_data/
+python -c "
+import os
+rev = set(d for d in os.listdir('revenue') if os.path.isdir(f'revenue/{d}'))
+sd  = set(d for d in os.listdir('stock_data') if os.path.isdir(f'stock_data/{d}'))
+only_in_rev = rev - sd
+print('Only in revenue/:', only_in_rev if only_in_rev else 'None (safe to delete)')
+"
 ```
+
+### Manual check after completion
+1. Run `python main.py --cache-status` — should still show the same stock count
+2. Run `python main.py` and open `http://localhost:5000` — app should still function normally

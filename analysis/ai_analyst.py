@@ -11,6 +11,9 @@ from fundamental_analysis import FundamentalAnalysis
 from sector_rotation import SectorRotation
 from stock_selector import StockSelector
 from report_generator import ReportGenerator
+from short_term_analyzer import ShortTermAnalyzer
+from mid_term_analyzer import MidTermAnalyzer
+from long_term_analyzer import LongTermAnalyzer
 from config import DEFAULT_WATCHLIST
 
 
@@ -25,6 +28,11 @@ class AIAnalyst:
         self.fund = FundamentalAnalysis()
         self.selector = StockSelector()
         self.reporter = ReportGenerator()
+        
+        self.short_term = ShortTermAnalyzer()
+        self.mid_term = MidTermAnalyzer()
+        self.long_term = LongTermAnalyzer()
+        
         self._stock_info = None
 
     # ─── 原版: 從 API 即時分析 (自訂清單) ───────────────────────
@@ -174,10 +182,17 @@ class AIAnalyst:
         if tech_result.get("error") and chip_result.get("institutional", {}).get("error"):
             return None
 
+        advice = {
+            "short_term": self.short_term.analyze(tech_result, chip_result),
+            "mid_term": self.mid_term.analyze(tech_result, chip_result),
+            "long_term": self.long_term.analyze(fund_result, tech_result)
+        }
+
         return {
             "technical": tech_result,
             "chip": chip_result,
             "fundamental": fund_result,
+            "advice": advice,
         }
 
     # ─── 共用: 產出報告 ─────────────────────────────────────────
@@ -269,10 +284,17 @@ class AIAnalyst:
 
         fund_result = self.fund.analyze(rev_df, per_df, fin_df)
 
+        advice = {
+            "short_term": self.short_term.analyze(tech_result, chip_result),
+            "mid_term": self.mid_term.analyze(tech_result, chip_result),
+            "long_term": self.long_term.analyze(fund_result, tech_result)
+        }
+
         return {
             "technical": tech_result,
             "chip": chip_result,
             "fundamental": fund_result,
+            "advice": advice,
         }
 
     def _analyze_sector_rotation(self, start_date: str, end_date: str) -> dict:

@@ -11,9 +11,8 @@ from data_fetcher import StockDataFetcher
 from config import FINMIND_API_TOKEN
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-CACHE_DIR = os.path.join(PROJECT_ROOT, "Stock_base_data")
+CACHE_DIR = os.path.join(PROJECT_ROOT, "stock_data")
 META_FILE = os.path.join(CACHE_DIR, "cache_meta.json")
-REVENUE_BASE_DIR = os.path.join(PROJECT_ROOT, "revenue")
 
 
 # 每批抓取股票數（避免 API 限速）
@@ -29,14 +28,11 @@ class StockCache:
 
     def __init__(self, api_delay: float = 0.3, batch_delay: float = 5.0):
         os.makedirs(CACHE_DIR, exist_ok=True)
-        os.makedirs(REVENUE_BASE_DIR, exist_ok=True)
+
         self.fetcher = StockDataFetcher()
         self.meta = self._load_meta()
         self.api_delay = api_delay
         self.batch_delay = batch_delay
-        
-        # 啟動時檢查是否需要遷移
-        self.migrate_to_per_stock_fundamental()
 
         
         # In-memory caches for fast full-market scanning
@@ -245,12 +241,7 @@ class StockCache:
             print()  # newline after batch
 
             # 每批完成後存檔 (防止中斷遺失)
-            self._append_and_save("daily_price.csv", all_price, batch_idx == start_batch)
-            self._append_and_save("institutional.csv", all_inst, batch_idx == start_batch)
-            self._append_and_save("margin.csv", all_margin, batch_idx == start_batch)
-            self._append_and_save("per_pbr.csv", all_per, batch_idx == start_batch)
-            self._append_and_save("revenue.csv", all_rev, batch_idx == start_batch)
-            self._append_and_save("financial.csv", all_fin, batch_idx == start_batch)
+            self._save_batch(all_price, all_inst, all_margin, all_per, all_rev, all_fin)
             all_price, all_inst, all_margin, all_per, all_rev, all_fin = [], [], [], [], [], []
 
             # 更新進度
@@ -405,53 +396,36 @@ class StockCache:
 
     def _save_batch(self, all_price, all_inst, all_margin, all_per, all_rev, all_fin):
         """輔助方法: 儲存更新批次"""
-        self._append_to_existing("daily_price.csv", all_price)
-        self._append_to_existing("institutional.csv", all_inst)
-        self._append_to_existing("margin.csv", all_margin)
-        self._append_to_existing("per_pbr.csv", all_per)
-        for rev in all_rev:
-            self._save_to_revenue_folder(rev["stock_id"].iloc[0], df_rev=rev)
-        for fin in all_fin:
-            self._save_to_revenue_folder(fin["stock_id"].iloc[0], df_fin=fin)
+        for df in all_price: self._save_to_stock_folder(df["stock_id"].iloc[0], "price.csv", df)
+        for df in all_inst: self._save_to_stock_folder(df["stock_id"].iloc[0], "institutional.csv", df)
+        for df in all_margin: self._save_to_stock_folder(df["stock_id"].iloc[0], "margin.csv", df)
+        for df in all_per: self._save_to_stock_folder(df["stock_id"].iloc[0], "per_pbr.csv", df)
+        for df in all_rev: self._save_to_stock_folder(df["stock_id"].iloc[0], "revenue.csv", df)
+        for df in all_fin: self._save_to_stock_folder(df["stock_id"].iloc[0], "financial.csv", df)
 
     # ─── 讀取本地資料 ───────────────────────────────────────────
 
     def preload_all_data(self):
         """一次載入所有資料到記憶體，以利快速全市場分析"""
         print("  ⏳ 正在快取資料到緩衝區 (加速讀取)...")
-        self._memory_cache["daily_price"] = self._load_and_group("daily_price.csv")
-        self._memory_cache["institutional"] = self._load_and_group("institutional.csv")
-        self._memory_cache["margin"] = self._load_and_group("margin.csv")
-        self._memory_cache["per_pbr"] = self._load_and_group("per_pbr.csv")
-        self._memory_cache["revenue"] = self._load_fundamental_all("data.csv")
-        self._memory_cache["financial"] = self._load_fundamental_all("financial.csv")
+        self._memory_cache["daily_price"] = self._load_all_stocks_folder("price.csv")
+        self._memory_cache["institutional"] = self._load_all_stocks_folder("institutional.csv")
+        self._memory_cache["margin"] = self._load_all_stocks_folder("margin.csv")
+        self._memory_cache["per_pbr"] = self._load_all_stocks_folder("per_pbr.csv")
+        self._memory_cache["revenue"] = self._load_all_stocks_folder("revenue.csv")
+        self._memory_cache["financial"] = self._load_all_stocks_folder("financial.csv")
 
         print("  ✅ 記憶體快取完成！")
 
-    def _load_and_group(self, filename: str) -> dict:
-        """將 CSV 讀入並依 stock_id 分組存成 dict of DataFrames"""
-        path = os.path.join(CACHE_DIR, filename)
-        if not os.path.exists(path):
-            return {}
-        df = pd.read_csv(path, low_memory=False, dtype={"stock_id": str})
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"].astype(str).str[:10], errors="coerce")
-        
-        # Group by stock_id
-        if "stock_id" in df.columns:
-            grouped = dict(tuple(df.groupby("stock_id")))
-            return grouped
-        return {"all": df}
-
-    def _load_fundamental_all(self, target_filename: str) -> dict:
-        """從 revenue/{stock_id}/{target_filename} 載入所有基本面資料到記憶體"""
+    def _load_all_stocks_folder(self, target_filename: str) -> dict:
+        """從各股票資料夾平行載入並組合"""
         out = {}
-        if not os.path.exists(REVENUE_BASE_DIR):
+        if not os.path.exists(CACHE_DIR):
             return out
         
-        for sid in os.listdir(REVENUE_BASE_DIR):
-            path = os.path.join(REVENUE_BASE_DIR, sid, target_filename)
-            if os.path.exists(path):
+        for sid in os.listdir(CACHE_DIR):
+            path = os.path.join(CACHE_DIR, sid, target_filename)
+            if os.path.exists(path) and sid.isdigit():
                 df = self._load_csv_path(path)
                 if not df.empty:
                     out[sid] = df
@@ -478,11 +452,9 @@ class StockCache:
             return self._load_csv(filename, stock_id)
 
     def load_price(self, stock_id: str = None) -> pd.DataFrame:
-        """讀取日K線快取"""
-        return self._get_from_memory_or_disk("daily_price", "daily_price.csv", stock_id)
+        return self._get_from_memory_or_disk("daily_price", "price.csv", stock_id)
 
     def load_institutional(self, stock_id: str = None) -> pd.DataFrame:
-        """讀取三大法人快取"""
         return self._get_from_memory_or_disk("institutional", "institutional.csv", stock_id)
 
     def load_institutional_all(self) -> pd.DataFrame:
@@ -491,32 +463,21 @@ class StockCache:
         if mem is not None:
              if mem: return pd.concat(mem.values(), ignore_index=True)
              return pd.DataFrame()
-        return self._load_csv("institutional.csv")
+        # 傳統備案，從所有 stock_data 當中搜括
+        all_inst = self._load_all_stocks_folder("institutional.csv")
+        if all_inst: return pd.concat(all_inst.values(), ignore_index=True)
+        return pd.DataFrame()
 
     def load_margin(self, stock_id: str = None) -> pd.DataFrame:
-        """讀取融資融券快取"""
         return self._get_from_memory_or_disk("margin", "margin.csv", stock_id)
 
     def load_per(self, stock_id: str = None) -> pd.DataFrame:
-        """讀取 PER/PBR 快取"""
         return self._get_from_memory_or_disk("per_pbr", "per_pbr.csv", stock_id)
 
     def load_revenue(self, stock_id: str = None) -> pd.DataFrame:
-        """讀取營收快取 (支援 per-stock folder)"""
-        if stock_id:
-            path = os.path.join(REVENUE_BASE_DIR, stock_id, "data.csv")
-            if os.path.exists(path):
-                return self._load_csv_path(path)
-        # 向下相容
         return self._get_from_memory_or_disk("revenue", "revenue.csv", stock_id)
 
     def load_financial(self, stock_id: str = None) -> pd.DataFrame:
-        """讀取財報快取 (支援 per-stock folder)"""
-        if stock_id:
-            path = os.path.join(REVENUE_BASE_DIR, stock_id, "financial.csv")
-            if os.path.exists(path):
-                return self._load_csv_path(path)
-        # 向下相容
         return self._get_from_memory_or_disk("financial", "financial.csv", stock_id)
 
     def _load_csv_path(self, path: str) -> pd.DataFrame:
@@ -547,25 +508,21 @@ class StockCache:
 
     def get_cached_stock_ids(self) -> list:
         """取得目前本地已下載資料的股票代碼"""
-        # 1. 掃描營收資料夾
         cached_ids = set()
-        if os.path.exists(REVENUE_BASE_DIR):
-            for d in os.listdir(REVENUE_BASE_DIR):
-                if os.path.isdir(os.path.join(REVENUE_BASE_DIR, d)) and d.isdigit():
+        if os.path.exists(CACHE_DIR):
+            for d in os.listdir(CACHE_DIR):
+                if os.path.isdir(os.path.join(CACHE_DIR, d)) and d.isdigit():
                     cached_ids.add(d)
-        
-        # 2. 也是可以檢查 daily_price.csv，但目前 revenue 資料夾是最好的指標
         return sorted(list(cached_ids))
 
     def download_deep_fundamental(self, stock_id: str):
         """下載特定股票 5 年份的基本面資料"""
-        rev_dir = os.path.join(REVENUE_BASE_DIR, stock_id)
+        rev_dir = os.path.join(CACHE_DIR, stock_id)
         os.makedirs(rev_dir, exist_ok=True)
         
-        path_rev = os.path.join(rev_dir, "data.csv")
+        path_rev = os.path.join(rev_dir, "revenue.csv")
         path_fin = os.path.join(rev_dir, "financial.csv")
 
-        
         # 檢查是否已存在且檔案不為空 (大於 100 bytes)
         if os.path.exists(path_rev) and os.path.exists(path_fin):
             if os.path.getsize(path_rev) > 100 and os.path.getsize(path_fin) > 100:
@@ -584,7 +541,7 @@ class StockCache:
         try:
             df_rev = self.fetcher.get_revenue(stock_id, start_date, end_date)
             if df_rev is not None and not df_rev.empty:
-                df_rev.to_csv(os.path.join(rev_dir, "revenue.csv"), index=False, encoding="utf-8-sig")
+                df_rev.to_csv(path_rev, index=False, encoding="utf-8-sig")
                 results["revenue"] = True
         except Exception as e:
             print(f"  ⚠️ {stock_id} 營收下載失敗: {e}")
@@ -618,31 +575,33 @@ class StockCache:
             # ... (price, inst, margin, per) ...
             df_price = self.fetcher.get_daily_price(stock_id, start_date, end_date)
             if df_price is not None and not df_price.empty:
-                self._append_to_existing("daily_price.csv", [df_price])
+                self._save_to_stock_folder(stock_id, "price.csv", df_price)
             time.sleep(self.api_delay)
             
             df_inst = self.fetcher.get_institutional(stock_id, start_date, end_date)
             if df_inst is not None and not df_inst.empty:
-                self._append_to_existing("institutional.csv", [df_inst])
+                self._save_to_stock_folder(stock_id, "institutional.csv", df_inst)
             time.sleep(self.api_delay)
                 
             df_margin = self.fetcher.get_margin(stock_id, start_date, end_date)
             if df_margin is not None and not df_margin.empty:
-                self._append_to_existing("margin.csv", [df_margin])
+                self._save_to_stock_folder(stock_id, "margin.csv", df_margin)
             time.sleep(self.api_delay)
                 
             df_per = self.fetcher.get_per_pbr(stock_id, start_date, end_date)
             if df_per is not None and not df_per.empty:
-                self._append_to_existing("per_pbr.csv", [df_per])
+                self._save_to_stock_folder(stock_id, "per_pbr.csv", df_per)
             time.sleep(self.api_delay)
                 
-            # 5. 營收 & 6. 財報 (改存入 revenue/stock_id/)
             df_rev = self.fetcher.get_revenue(stock_id, start_date_rev, end_date)
-            time.sleep(self.api_delay)
-            df_fin = self.fetcher.get_financial(stock_id, start_date_rev, end_date)
+            if df_rev is not None and not df_rev.empty:
+                self._save_to_stock_folder(stock_id, "revenue.csv", df_rev)
             time.sleep(self.api_delay)
             
-            self._save_to_revenue_folder(stock_id, df_rev, df_fin)
+            df_fin = self.fetcher.get_financial(stock_id, start_date_rev, end_date)
+            if df_fin is not None and not df_fin.empty:
+                self._save_to_stock_folder(stock_id, "financial.csv", df_fin)
+            time.sleep(self.api_delay)
                 
             print(f"  ✅ {stock_id} 即時快取更新完成 (基本面已分類至 revenue 目錄)")
             return True
@@ -655,18 +614,14 @@ class StockCache:
             return False
 
 
-    def _save_to_revenue_folder(self, stock_id, df_rev=None, df_fin=None):
-        """儲存基本面資料到分門別類的目錄"""
-        rev_dir = os.path.join(REVENUE_BASE_DIR, stock_id)
-        os.makedirs(rev_dir, exist_ok=True)
-        
-        if df_rev is not None and not df_rev.empty:
-            path = os.path.join(rev_dir, "data.csv")
-            self._append_or_create_csv(path, df_rev)
-            
-        if df_fin is not None and not df_fin.empty:
-            path = os.path.join(rev_dir, "financial.csv")
-            self._append_or_create_csv(path, df_fin)
+    def _save_to_stock_folder(self, stock_id, filename, df):
+        """通用儲存到獨立股票目錄"""
+        stock_dir = os.path.join(CACHE_DIR, str(stock_id))
+        os.makedirs(stock_dir, exist_ok=True)
+        path = os.path.join(stock_dir, filename)
+        self._append_or_create_csv(path, df)
+
+
 
     def _append_or_create_csv(self, path, df):
         """通用: 追加或建立 CSV 且去重"""
@@ -693,46 +648,17 @@ class StockCache:
 
 
     def _load_csv(self, filename: str, stock_id: str = None) -> pd.DataFrame:
-        path = os.path.join(CACHE_DIR, filename)
+        if stock_id:
+            path = os.path.join(CACHE_DIR, str(stock_id), filename)
+        else:
+            path = os.path.join(CACHE_DIR, filename)
+
         if not os.path.exists(path):
             return pd.DataFrame()
         df = pd.read_csv(path, low_memory=False, dtype={"stock_id": str})
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"].astype(str).str[:10], errors="coerce")
-        if stock_id and "stock_id" in df.columns:
-            df = df[df["stock_id"] == stock_id]
         return df
-
-    def _append_and_save(self, filename: str, dfs: list, is_first_batch: bool):
-        """儲存資料 (首批覆寫，後續追加)"""
-        if not dfs:
-            return
-        combined = pd.concat(dfs, ignore_index=True)
-        path = os.path.join(CACHE_DIR, filename)
-
-        if is_first_batch:
-            combined.to_csv(path, index=False, encoding="utf-8-sig")
-        else:
-            # 如果檔案不存在 (可能被刪了)，寫入 header
-            write_header = not os.path.exists(path)
-            combined.to_csv(path, mode="a", header=write_header, index=False, encoding="utf-8-sig")
-
-    def _append_to_existing(self, filename: str, dfs: list):
-        """追加新資料到現有 CSV"""
-        if not dfs:
-            return
-        combined = pd.concat(dfs, ignore_index=True)
-        path = os.path.join(CACHE_DIR, filename)
-
-        if os.path.exists(path):
-            # 去除重複 (以 date + stock_id 為主鍵)
-            existing = pd.read_csv(path, low_memory=False, dtype={"stock_id": str})
-            merged = pd.concat([existing, combined], ignore_index=True)
-            if "date" in merged.columns and "stock_id" in merged.columns:
-                merged = merged.drop_duplicates(subset=["date", "stock_id", "name"] if "name" in merged.columns else ["date", "stock_id"], keep="last")
-            merged.to_csv(path, index=False, encoding="utf-8-sig")
-        else:
-            combined.to_csv(path, index=False, encoding="utf-8-sig")
 
     def _print_cache_status(self):
         """顯示快取狀態"""
@@ -745,39 +671,7 @@ class StockCache:
                 size_mb = os.path.getsize(path) / 1024 / 1024
                 print(f"     {fname}: {size_mb:.1f} MB")
 
-    def migrate_to_per_stock_fundamental(self):
-        """一次性遷移：將 Stock_base_data 中的巨大 revenue.csv/financial.csv 拆分到 revenue/ 檔案夾"""
-        old_rev = os.path.join(CACHE_DIR, "revenue.csv")
-        old_fin = os.path.join(CACHE_DIR, "financial.csv")
-        
-        if os.path.exists(old_rev):
-            print("  🚚 正在遷移營收資料至新目錄結構...")
-            df = pd.read_csv(old_rev, dtype={"stock_id": str})
-            # 依 stock_id 分組
-            for sid, group in df.groupby("stock_id"):
-                self._save_to_revenue_folder(sid, df_rev=group)
-            # 刪除舊檔 (或更名備份)
-            try:
-                if os.path.exists(old_rev + ".bak"):
-                    os.remove(old_rev + ".bak")
-                os.rename(old_rev, old_rev + ".bak")
-            except Exception as e:
-                print(f"  ⚠️ 無法備份 {old_rev}: {e}")
-            print("  ✅ 營收遷移完成")
 
-        if os.path.exists(old_fin):
-            print("  🚚 正在遷移財報資料至新目錄結構...")
-            df = pd.read_csv(old_fin, dtype={"stock_id": str})
-            # 依 stock_id 分組
-            for sid, group in df.groupby("stock_id"):
-                self._save_to_revenue_folder(sid, df_fin=group)
-            try:
-                if os.path.exists(old_fin + ".bak"):
-                    os.remove(old_fin + ".bak")
-                os.rename(old_fin, old_fin + ".bak")
-            except Exception as e:
-                print(f"  ⚠️ 無法備份 {old_fin}: {e}")
-            print("  ✅ 財報遷移完成")
 
     def get_last_update(self) -> str:
         return self.meta.get("last_update", "N/A")
