@@ -43,6 +43,15 @@ class ReportGenerator:
             if key_signals:
                 sig_str = " | ".join([f"{s[0]} {s[1]}" for s in key_signals])
                 lines.append(f"      {sig_str}")
+            
+            # 💡 建議價位與理由
+            advice = stock.get("advice", {})
+            for term, data in advice.items():
+                if data.get("action") not in ["觀望", "無資料", "減碼觀望"]:
+                    term_label = "短" if term == "short_term" else ("中" if term == "mid_term" else "長")
+                    lines.append(f"      [{term_label}] 買:{data.get('buy_range')}  賣:{data.get('sell_range')}")
+                    if data.get("price_basis"):
+                        lines.append(f"          └─ {data.get('price_basis')}")
             lines.append("")
 
         # ─── 族群資金輪動 ──────────────────────────────────────

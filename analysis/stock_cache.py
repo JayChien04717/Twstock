@@ -26,13 +26,21 @@ BATCH_DELAY = 5
 class StockCache:
     """本地 CSV 快取管理器"""
 
-    def __init__(self, api_delay: float = 0.3, batch_delay: float = 5.0):
+    def __init__(self, api_delay: float = 0.3, batch_delay: float = 5.0, use_yfinance: bool = False):
+        """
+        use_yfinance: True → 日K線改用 yfinance 下載 (FinMind 額度耗盡時使用)。
+                      籌碼/基本面資料仍嘗試 FinMind，但若同樣額度耗盡則跳過。
+        """
         os.makedirs(CACHE_DIR, exist_ok=True)
 
-        self.fetcher = StockDataFetcher()
+        self.fetcher = StockDataFetcher(use_yfinance=use_yfinance)
         self.meta = self._load_meta()
         self.api_delay = api_delay
         self.batch_delay = batch_delay
+        self.use_yfinance = use_yfinance
+
+        if use_yfinance:
+            print("📡 [yfinance 模式] 日K線將使用 yfinance 下載，籌碼/基本面仍走 FinMind (可能跳過)。")
 
         
         # In-memory caches for fast full-market scanning

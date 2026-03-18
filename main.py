@@ -45,10 +45,11 @@ from flask import Flask, render_template, jsonify, request
 app = Flask(__name__, template_folder=template_dir, static_folder=os.path.join(template_dir, 'static') if os.path.exists(os.path.join(template_dir, 'static')) else None)
 analyst = None  # lazy init
 
-def background_sync_task(api_delay, batch_delay):
+def background_sync_task(api_delay, batch_delay, use_yfinance=False):
     """背景同步任務：自動偵測並下載缺失資料"""
-    print(f"\n🔄 [Background Sync] 啟動 (間隔: {api_delay}s, 批次暫停: {batch_delay}s)")
-    cache = StockCache(api_delay=api_delay, batch_delay=batch_delay)
+    mode_label = "yfinance" if use_yfinance else "FinMind"
+    print(f"\n🔄 [Background Sync] 啟動 (間隔: {api_delay}s, 批次暫停: {batch_delay}s, 來源: {mode_label})")
+    cache = StockCache(api_delay=api_delay, batch_delay=batch_delay, use_yfinance=use_yfinance)
     
     while True:
         try:
@@ -189,19 +190,23 @@ def main():
     parser.add_argument("--update-cache", action="store_true", help="增量更新快取")
     parser.add_argument("--cache-status", action="store_true", help="查看快取狀態")
     parser.add_argument("--auto-retry", action="store_true", help="額度用完時自動等待並重試")
+    parser.add_argument(
+        "--yfinance", action="store_true",
+        help="日K線改用 yfinance 下載 (FinMind token 額度耗盡時使用，免費且無限制)"
+    )
 
     args = parser.parse_args()
 
     # == 特殊 CLI 操作 ==
     if args.init_cache:
-        cache = StockCache(api_delay=args.delay, batch_delay=args.pause)
+        cache = StockCache(api_delay=args.delay, batch_delay=args.pause, use_yfinance=args.yfinance)
         while True:
             if cache.init_cache(lookback_days=args.days) or not args.auto_retry: break
             time.sleep(900)
         return
 
     if args.update_cache:
-        cache = StockCache(api_delay=args.delay, batch_delay=args.pause)
+        cache = StockCache(api_delay=args.delay, batch_delay=args.pause, use_yfinance=args.yfinance)
         while True:
             if cache.update_cache() or not args.auto_retry: break
             time.sleep(900)
@@ -215,7 +220,7 @@ def main():
 
     # == 啟動 Web Server (預設任務) ==
     if args.sync:
-        threading.Thread(target=background_sync_task, args=(args.delay, args.pause), daemon=True).start()
+        threading.Thread(target=background_sync_task, args=(args.delay, args.pause, args.yfinance), daemon=True).start()
 
     print("\n🚀 AI 台股分析師 Web Server 啟動中...")
     print(f"📡 http://localhost:{FLASK_PORT}")
